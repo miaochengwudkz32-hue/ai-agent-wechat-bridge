@@ -90,6 +90,23 @@ node bridge.js       # 启动桥接程序
 - `state/` 里的绑定文件等于凭据，不要提交、不要分享。
 - 不要把权限模式设成完全放行。删除、覆盖、发送、付款等操作应该先让你确认。
 
+## 五、相关项目
+
+GitHub 上已经有不少做同一件事的项目。如果你只想要一个现成的方案，优先看下面这些。表格按相关度排列，许可证以各仓库的 LICENSE 文件为准。
+
+| 项目 | 说明 | 许可证 |
+|---|---|---|
+| [fastclaw-ai/weclaw](https://github.com/fastclaw-ai/weclaw) | 通用：把 WeChat ClawBot 接到任意 agent（Go） | MIT |
+| [Wechat-ggGitHub/wechat-claude-code](https://github.com/Wechat-ggGitHub/wechat-claude-code) | Claude Code 的微信 Skill（TypeScript） | MIT |
+| [Conn-Ho/wechat-claude-code](https://github.com/Conn-Ho/wechat-claude-code) | 通过微信远程控制 Claude Code，支持权限审批和中断 | Apache-2.0 |
+| [UnknownJackMe/wechat-claude-code-enhanced](https://github.com/UnknownJackMe/wechat-claude-code-enhanced) | 上一项目的增强版，增加 /resume、/effort 等指令 | MIT |
+| [liiiiwh/weixin-clawbot-skill](https://github.com/liiiiwh/weixin-clawbot-skill) | 让任何 AI Agent 接入微信的一键技能（TypeScript） | MIT |
+| [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin) | 腾讯官方 iLink 插件，协议的权威来源 | 见仓库 LICENSE |
+| [photon-hq/wechat-ilink-client](https://github.com/photon-hq/wechat-ilink-client) | 独立的 TypeScript iLink 客户端，逆向自官方插件 | 未声明 |
+| [DBAAZzz/easy-weixin-clawbot](https://github.com/DBAAZzz/easy-weixin-clawbot) | 多账号 ClawBot 连接器，带 Web 管理后台 | 未声明 |
+
+本项目的侧重点不是代码数量，而是：一份与具体 agent 无关的任务书、协议参考和验收清单，让任何 agent 都能照着复刻，并且每一项都可以实测验证。
+
 ## 许可证
 
 MIT，见 `LICENSE`。
