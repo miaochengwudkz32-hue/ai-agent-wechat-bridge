@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import * as ilink from "./src/ilink.js";
 import { runClaude, findClaude, denialsToAllowedTools } from "./src/claude.js";
 import { toPlainText, chunkText, extractSendMarkers, toolLabel } from "./src/text.js";
+import { projectDirOf, listSessions, takeActiveApproval, APPROVAL_TTL_MS } from "./src/sessions.js";
 import {
   ROOT,
   STATE_DIR,
@@ -80,7 +81,8 @@ const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const HELP = [
   "可用指令：",
   "/stop  立刻停止正在做的事",
-  "/approve  批准刚才被安全检查拦下的操作并继续",
+  `/approve  批准刚才被安全检查拦下的操作并继续（${APPROVAL_TTL_MS / 60_000} 分钟内有效）`,
+  "/resume  列出最近的对话；发 /resume 编号 就接着聊那一段",
   "/screenshot  截一张电脑屏幕发给你",
   "/new  开始新对话（清空上下文，更省额度）",
   "/model opus|sonnet|haiku|default  切换模型",
@@ -351,7 +353,7 @@ function loginExpiryNote() {
 
 function describeDenial(d) {
   const input = d.tool_input || {};
-  if (input.command) return `运行命令：${String(input.command).slice(0, 120)}`;
+  if (input.command) return `运行命令：${String(input.command).slice(0, 200)}`;
   if (input.file_path) return `${d.tool_name}：${input.file_path}`;
   if (input.url) return `${d.tool_name}：${input.url}`;
   return d.tool_name || "未知操作";
@@ -404,8 +406,10 @@ async function converse(prompt, { isWake = false, allowedTools = [] } = {}) {
 
   // total_cost_usd is cumulative for a resumed session, so record the difference for this call.
   let callCost = res.costUsd || 0;
-  if (res.sessionId && res.sessionId === prevSessionId && callCost >= (rt.sessionCostUsd || 0)) {
-    callCost -= rt.sessionCostUsd || 0;
+  if (res.sessionId && res.sessionId === prevSessionId) {
+    // rt.sessionCostUsd is null right after /resume: this call only sets the baseline, so it is not counted.
+    if (rt.sessionCostUsd == null) callCost = 0;
+    else if (callCost >= rt.sessionCostUsd) callCost -= rt.sessionCostUsd;
   }
   if (res.sessionId) {
     rt.sessionId = res.sessionId;
@@ -444,10 +448,12 @@ async function converse(prompt, { isWake = false, allowedTools = [] } = {}) {
     log("定时任务：Claude 判断现在不需要打扰你");
     return;
   }
-  if (rt.pendingApproval) {
-    const list = rt.pendingApproval.denials.map((d, i) => `${i + 1}. ${describeDenial(d)}`).join("\n");
-    text += `\n\n⚠️ 下面这些操作被安全检查拦下了：\n${list}\n回复 /approve 批准并让我继续；不回复就当不批准。`;
-    log(`有 ${rt.pendingApproval.denials.length} 个操作被拦下，等待 /approve`);
+  const pa = takeActiveApproval(rt);
+  saveRt();
+  if (pa.state === "active") {
+    const list = pa.pending.denials.map((d, i) => `${i + 1}. ${describeDenial(d)}`).join("\n");
+    text += `\n\n⚠️ 下面这些操作被安全检查拦下了：\n${list}\n回复 /approve 批准并让我继续（${APPROVAL_TTL_MS / 60_000} 分钟内有效）；不回复就当不批准。`;
+    log(`有 ${pa.pending.denials.length} 个操作被拦下，等待 /approve`);
   }
   if (!text && !files.length) text = "（没有文字回复）";
   if (text) await sendToOwner(text + loginExpiryNote(), { runId });
@@ -523,16 +529,55 @@ async function handleCommand(text) {
       return true;
     }
     case "/approve": {
-      const pending = rt.pendingApproval;
-      if (!pending?.denials?.length) {
+      const pa = takeActiveApproval(rt);
+      saveRt();
+      if (pa.state === "none") {
         await sendToOwner("现在没有等待批准的操作。");
         return true;
       }
-      const allowed = denialsToAllowedTools(pending.denials);
+      if (pa.state === "expired") {
+        await sendToOwner(`刚才被拦下的操作超过 ${APPROVAL_TTL_MS / 60_000} 分钟了，没有执行。如果还需要，请重新让我做一次。`);
+        return true;
+      }
+      const allowed = denialsToAllowedTools(pa.pending.denials);
       log(`用户批准：${allowed.join(" , ")}`);
       rt.pendingApproval = null;
       saveRt();
       await converse("用户已经批准了刚才被安全检查拦下的操作。请继续完成刚才的任务。", { allowedTools: allowed });
+      return true;
+    }
+    case "/resume": {
+      const arg = args[0];
+      if (!arg) {
+        const list = listSessions(projectDirOf(WORKSPACE), { limit: 5 });
+        if (!list.length) {
+          await sendToOwner("还没有可以接着聊的历史对话。");
+          return true;
+        }
+        rt.resumeChoices = list.map((s) => s.id);
+        saveRt();
+        const lines = list.map((s, i) => {
+          const title = s.title ? s.title.slice(0, 30) : "（无文字记录）";
+          const mark = s.id === rt.sessionId ? "  ← 当前" : "";
+          return `${i + 1}. ${fmtTime(s.mtime)}  ${title}${mark}`;
+        });
+        await sendToOwner(`最近的对话：\n${lines.join("\n")}\n发 /resume 编号 接着聊，例如 /resume 2。`);
+        return true;
+      }
+      const n = Number(arg);
+      const id = Number.isInteger(n) ? rt.resumeChoices?.[n - 1] : undefined;
+      if (!id) {
+        await sendToOwner("没有这个编号。先发 /resume 看一下列表。");
+        return true;
+      }
+      if (rt.sessionId !== id) {
+        rt.sessionId = id;
+        rt.sessionCostUsd = null; // baseline for this session's cost is set by the next call
+      }
+      rt.sessionUpdatedAt = Date.now();
+      rt.pendingApproval = null;
+      saveRt();
+      await sendToOwner("好的，已经切换到那段对话，接下来的消息会接着它聊。");
       return true;
     }
     case "/model": {
@@ -582,7 +627,9 @@ function statusText() {
     `近 7 天：${week.calls} 次，约 $${week.total.toFixed(3)}`,
     `定时任务：${(cfg.schedules || []).filter((s) => s.enabled).length} 个已启用`,
   ];
-  if (rt.pendingApproval) lines.push(`等待批准：${rt.pendingApproval.denials.length} 个操作（发 /approve）`);
+  const pa = takeActiveApproval(rt);
+  saveRt();
+  if (pa.state === "active") lines.push(`等待批准：${pa.pending.denials.length} 个操作（发 /approve，${APPROVAL_TTL_MS / 60_000} 分钟内有效）`);
   if (rt.credentialExpiresAt) lines.push(`Claude 登录有效期至：${new Date(rt.credentialExpiresAt).toLocaleString("zh-CN", { hour12: false })}`);
   return lines.join("\n");
 }

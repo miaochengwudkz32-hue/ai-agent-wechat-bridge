@@ -32,6 +32,15 @@
         "22:00"
       ],
       "prompt": "检查一下我有没有需要马上处理的重要事项。有的话简单告诉我是什么；没有就回复 NO_MESSAGE。"
+    },
+    {
+      "name": "微信协议检查",
+      "enabled": true,
+      "time": "09:00",
+      "days": [
+        1
+      ],
+      "prompt": "每周一检查微信 ClawBot 官方插件有没有新版本，只做检查，不要安装、修改或删除任何东西。用 npm view @tencent-weixin/openclaw-weixin version time.modified 查最新版本和发布时间，并和 C:SERSĽ�ǚ�ǔ�ƈ�Ő�.claude-wechatsrcilink.js 里的 PROTOCOL_VERSION（当前为 2.4.10）比较。如果有新版本，用一两句话说明版本号和发布日期，并提醒我要不要对照更新 ilink.js；没有新版本就回复 NO_MESSAGE。"
     }
   ]
 }
