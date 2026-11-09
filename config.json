@@ -1,0 +1,37 @@
+{
+  "model": "",
+  "effort": "",
+  "permissionMode": "auto",
+  "strictMcp": true,
+  "showToolProgress": true,
+  "sessionIdleResetHours": 6,
+  "claudeTimeoutMinutes": 15,
+  "maxChunkChars": 1800,
+  "wakePort": 18765,
+  "announceOnStart": false,
+  "schedules": [
+    {
+      "name": "早安",
+      "enabled": false,
+      "time": "08:30",
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "prompt": "给我发一条简短的早安。顺便看一下我今天有没有需要处理的事，有的话列出来。"
+    },
+    {
+      "name": "新邮件检查",
+      "enabled": false,
+      "everyMinutes": 120,
+      "activeHours": [
+        "09:00",
+        "22:00"
+      ],
+      "prompt": "检查一下我有没有需要马上处理的重要事项。有的话简单告诉我是什么；没有就回复 NO_MESSAGE。"
+    }
+  ]
+}
