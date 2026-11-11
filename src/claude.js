@@ -54,6 +54,7 @@ export function runClaude({
   claudePath,
   prompt,
   sessionId,
+  forkSession = false,
   model,
   effort,
   permissionMode,
@@ -76,8 +77,11 @@ export function runClaude({
   if (effort) args.push("--effort", effort);
   for (const d of addDirs) args.push("--add-dir", d);
   if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
-  if (sessionId) args.push("--resume", sessionId);
-  else if (systemPromptFile) args.push("--append-system-prompt-file", systemPromptFile);
+  if (sessionId) {
+    args.push("--resume", sessionId);
+    // Continue a copy of the session: the original log (maybe still open in the desktop app) is never written.
+    if (forkSession) args.push("--fork-session");
+  } else if (systemPromptFile) args.push("--append-system-prompt-file", systemPromptFile);
 
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY; // always use the claude.ai (school plan) login, never an API key

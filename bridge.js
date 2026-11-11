@@ -5,11 +5,12 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import { execFile } from "node:child_process";
 import * as ilink from "./src/ilink.js";
 import { runClaude, findClaude, denialsToAllowedTools } from "./src/claude.js";
 import { toPlainText, chunkText, extractSendMarkers, toolLabel } from "./src/text.js";
-import { projectDirOf, listSessions, takeActiveApproval, APPROVAL_TTL_MS } from "./src/sessions.js";
+import { projectDirOf, listSessions, listProjects, findFolders, takeActiveApproval, APPROVAL_TTL_MS } from "./src/sessions.js";
 import {
   ROOT,
   STATE_DIR,
@@ -50,6 +51,11 @@ fs.writeFileSync(
 const rt = readJson(RUNTIME_FILE, {});
 const saveRt = () => writeJson(RUNTIME_FILE, rt);
 
+// The folder Claude works in: the bridge workspace, or the project picked with /project.
+function currentCwd() {
+  return rt.cwd && fs.existsSync(rt.cwd) ? rt.cwd : WORKSPACE;
+}
+
 // The appended system prompt is fixed when a conversation starts, so a changed prompt
 // (new features, new instructions) needs a fresh conversation to take effect.
 // Called only after this instance owns the control port, so a duplicate copy never touches state.
@@ -82,7 +88,8 @@ const HELP = [
   "可用指令：",
   "/stop  立刻停止正在做的事",
   `/approve  批准刚才被安全检查拦下的操作并继续（${APPROVAL_TTL_MS / 60_000} 分钟内有效）`,
-  "/resume  列出最近的对话；发 /resume 编号 就接着聊那一段",
+  "/resume  列出当前项目最近的对话；发 /resume 编号 就接着聊那一段",
+  "/project  列出最近用过的项目文件夹；发 /project 编号 切换过去接着聊，/project 0 回到微信默认目录",
   "/screenshot  截一张电脑屏幕发给你",
   "/new  开始新对话（清空上下文，更省额度）",
   "/model opus|sonnet|haiku|default  切换模型",
@@ -371,11 +378,18 @@ async function converse(prompt, { isWake = false, allowedTools = [] } = {}) {
   const ctl = new AbortController();
   currentRun = { abort: ctl, startedAt: Date.now() };
   const prevSessionId = rt.sessionId;
+  // A session picked with /project is continued as a copy. --append-system-prompt-file is not applied when
+  // resuming, so the first message after a switch carries the WeChat rules itself (the block starts with "<", so
+  // it is skipped when titles are read).
+  const promptForClaude = rt.forkNext && rt.sessionId
+    ? `<wechat-mode-rules>\n${fs.readFileSync(SYSTEM_PROMPT_FILE, "utf-8")}\n</wechat-mode-rules>\n\n${prompt}`
+    : prompt;
   const call = () =>
     runClaude({
       claudePath,
-      prompt,
+      prompt: promptForClaude,
       sessionId: rt.sessionId,
+      forkSession: !!rt.forkNext,
       model: currentModel(),
       effort: currentEffort(),
       permissionMode: cfg.permissionMode,
@@ -383,7 +397,7 @@ async function converse(prompt, { isWake = false, allowedTools = [] } = {}) {
       addDirs: cfg.addDirs,
       allowedTools,
       strictMcp: cfg.strictMcp,
-      cwd: WORKSPACE,
+      cwd: currentCwd(),
       timeoutMs: cfg.claudeTimeoutMinutes * 60_000,
       signal: ctl.signal,
       onToolStart: (e) => progress.start(e),
@@ -415,6 +429,7 @@ async function converse(prompt, { isWake = false, allowedTools = [] } = {}) {
     rt.sessionId = res.sessionId;
     rt.sessionUpdatedAt = Date.now();
     rt.sessionCostUsd = res.costUsd || 0;
+    rt.forkNext = false;
   }
   if (res.credentialExpiresAt) rt.credentialExpiresAt = res.credentialExpiresAt;
   rt.pendingApproval = res.permissionDenials?.length ? { denials: res.permissionDenials, at: Date.now() } : null;
@@ -505,6 +520,22 @@ async function handleUrgentCommand(text) {
   return false;
 }
 
+const PROJECTS_ROOT = path.join(os.homedir(), ".claude", "projects");
+const PROJECT_SEARCH_ROOTS = ["", "Desktop", "Documents", "Downloads"].map((d) => path.join(os.homedir(), d));
+
+// Point the bridge at a project (null = back to the WeChat workspace) and pick its latest conversation, if any.
+function switchProject(cwd) {
+  rt.cwd = cwd && cwd !== WORKSPACE ? cwd : null;
+  const latest = listSessions(projectDirOf(currentCwd()), { limit: 1 })[0] || null;
+  rt.sessionId = latest ? latest.id : null;
+  rt.forkNext = !!latest;
+  rt.sessionCostUsd = null;
+  rt.sessionUpdatedAt = Date.now();
+  rt.pendingApproval = null;
+  saveRt();
+  return latest;
+}
+
 async function handleCommand(text) {
   const [cmd, ...args] = text.trim().split(/\s+/);
   switch (cmd.toLowerCase()) {
@@ -549,7 +580,7 @@ async function handleCommand(text) {
     case "/resume": {
       const arg = args[0];
       if (!arg) {
-        const list = listSessions(projectDirOf(WORKSPACE), { limit: 5 });
+        const list = listSessions(projectDirOf(currentCwd()), { limit: 5 });
         if (!list.length) {
           await sendToOwner("还没有可以接着聊的历史对话。");
           return true;
@@ -574,10 +605,64 @@ async function handleCommand(text) {
         rt.sessionId = id;
         rt.sessionCostUsd = null; // baseline for this session's cost is set by the next call
       }
+      rt.forkNext = true; // continue a copy, so the original log (maybe open in the desktop app) is not written
       rt.sessionUpdatedAt = Date.now();
       rt.pendingApproval = null;
       saveRt();
-      await sendToOwner("好的，已经切换到那段对话，接下来的消息会接着它聊。");
+      await sendToOwner("好的，已经切换到那段对话，接下来的消息会接着它聊（在它的副本里继续，原记录不改动）。");
+      return true;
+    }
+    case "/project": {
+      if (currentRun || queue.length) {
+        await sendToOwner("还有消息在处理中。等它完成，或发 /stop 之后，再切换项目。");
+        return true;
+      }
+      const arg = args.join(" ");
+      if (!arg) {
+        const list = listProjects(PROJECTS_ROOT, { exclude: WORKSPACE, searchRoots: PROJECT_SEARCH_ROOTS });
+        if (!list.length) {
+          await sendToOwner("没有找到可以选的项目文件夹。");
+          return true;
+        }
+        rt.projectChoices = list.map((p) => p.cwd);
+        saveRt();
+        const lines = list.map(
+          (p, i) => `${i + 1}. ${p.name}  （${fmtTime(p.mtime)}）${p.cwd === currentCwd() ? "  ← 当前" : ""}`,
+        );
+        await sendToOwner(
+          `可以选的项目：\n${lines.join("\n")}\n发 /project 编号 切换过去，接着那个项目最近的一段对话。发 /project 0 回到微信默认目录。`,
+        );
+        return true;
+      }
+      let target;
+      if (arg === "0") target = null;
+      else if (/^\d+$/.test(arg)) {
+        target = rt.projectChoices?.[Number(arg) - 1];
+        if (!target || !fs.existsSync(target)) {
+          await sendToOwner("没有这个编号。先发 /project 看一下列表。");
+          return true;
+        }
+      } else {
+        // A folder name, e.g. "/project Northeastern", looked up in the usual places.
+        const hits = findFolders(arg, PROJECT_SEARCH_ROOTS);
+        if (!hits.length) {
+          await sendToOwner(`没有找到名字里含「${arg}」的文件夹。`);
+          return true;
+        }
+        if (hits.length > 1) {
+          await sendToOwner(`有 ${hits.length} 个文件夹名字里含「${arg}」：\n${hits.map((h) => path.basename(h)).join("\n")}\n请写得更具体一点。`);
+          return true;
+        }
+        target = hits[0];
+      }
+      const latest = switchProject(target);
+      const name = target ? path.basename(target) : "微信默认目录（workspace）";
+      const title = latest?.title ? `「${latest.title.slice(0, 30)}」` : "";
+      await sendToOwner(
+        latest
+          ? `已切换到「${name}」，接着它最近的一段对话${title}聊。为了不和桌面上的原对话互相覆盖，会在它的副本里继续；桌面上之后的新内容不会同步过来。`
+          : `已切换到「${name}」。这个项目还没有对话，下一条消息会开始新对话。`,
+      );
       return true;
     }
     case "/model": {
@@ -620,6 +705,7 @@ function statusText() {
   const week = usageSince(new Date(Date.now() - 7 * 86400_000));
   const lines = [
     `状态：${currentRun ? `正在处理（已 ${Math.round((Date.now() - currentRun.startedAt) / 1000)} 秒，发 /stop 可停止）` : "空闲"}${queue.length ? `，排队 ${queue.length} 条` : ""}`,
+    `项目：${rt.cwd && currentCwd() === rt.cwd ? path.basename(rt.cwd) : "微信默认目录（workspace）"}`,
     `模型：${currentModel() || "默认（跟随 Claude Code）"}`,
     `思考程度：${currentEffort() || "默认（跟随模型）"}`,
     `会话：${rt.sessionId ? `进行中（上次 ${fmtTime(rt.sessionUpdatedAt)}）` : "新会话"}`,

@@ -1,5 +1,5 @@
 // Wake the running bridge from a script or Task Scheduler.
-//   node wake.js "看看今天有没有需要处理的事，有就提醒我"   -> Claude runs the prompt and messages you
+//   node wake.js "看看有没有新消息，有就提醒我"   -> Claude runs the prompt and messages you
 //   node wake.js --send "直接发这句话"                   -> send text as-is (no Claude, no quota)
 //   node wake.js --status                                -> print bridge status
 //   node wake.js --file "C:\path\to\file.pdf"           -> send a file or image to your WeChat
@@ -8,10 +8,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { LOCAL_TOKEN_FILE, RUNTIME_FILE, loadConfig, readJson } from "./src/store.js";
+import { ROOT, LOCAL_TOKEN_FILE, RUNTIME_FILE, loadConfig, readJson } from "./src/store.js";
 import { findClaude } from "./src/claude.js";
 
 const cfg = loadConfig();
+const WORKSPACE = process.env.CLAUDE_WECHAT_WORKSPACE
+  ? path.resolve(process.env.CLAUDE_WECHAT_WORKSPACE)
+  : path.join(ROOT, "workspace");
 const token = fs.existsSync(LOCAL_TOKEN_FILE) ? fs.readFileSync(LOCAL_TOKEN_FILE, "utf-8").trim() : "";
 const base = `http://127.0.0.1:${cfg.wakePort}`;
 const args = process.argv.slice(2);
@@ -31,7 +34,9 @@ try {
   if (args[0] === "--open") {
     const rt = readJson(RUNTIME_FILE, {});
     if (!rt.sessionId) throw new Error("现在没有进行中的会话（在微信里发条消息就会有）");
-    const r = spawnSync(findClaude(cfg.claudePath), ["--desktop", "--resume", rt.sessionId], { stdio: "inherit" });
+    // The session lives under the project folder it was run in (see /project), so open it from there.
+    const cwd = rt.cwd && fs.existsSync(rt.cwd) ? rt.cwd : WORKSPACE;
+    const r = spawnSync(findClaude(cfg.claudePath), ["--desktop", "--resume", rt.sessionId], { stdio: "inherit", cwd });
     process.exit(r.status ?? 1);
   } else if (args[0] === "--status") {
     console.log((await call("GET", "/status")).text);

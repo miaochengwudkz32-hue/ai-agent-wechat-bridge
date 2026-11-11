@@ -154,6 +154,19 @@ try {
   if (sends().slice(n).some((l) => l.includes("完成"))) throw new Error("task kept going after /stop");
   ok("step 8: /stop interrupts a running task immediately");
 
+  // 8b. /project lists the folders, switches, and the next message is answered there (the listing depends on this machine)
+  n = sends().length;
+  await inject("/project");
+  await waitSend(n, (l) => l.includes("可以选的项目") || l.includes("没有找到可以选的项目文件夹"), 15_000, "reply to /project");
+  n = sends().length;
+  await inject("/project 0");
+  await waitSend(n, (l) => l.includes("已切换到「微信默认目录"), 15_000, "reply to /project 0");
+  n = sends().length;
+  await inject("这是测试：只回复一个字：好");
+  // The bridge paces its sends (iLink rate limit), and this run sends many messages, so allow for a long wait.
+  await waitSend(n, () => true, 420_000, "reply after /project 0");
+  ok("step 8b: /project lists folders and switches back; the next message is answered after the switch");
+
   // 9. /screenshot
   if (!skipScreenshot) {
     n = sends().length;
